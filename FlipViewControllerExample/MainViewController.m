@@ -21,7 +21,8 @@
 - (void)viewDidLoad {
     [super viewDidLoad];
     
-    self.flipViewController = [[FlipViewController alloc] initWithFrame:self.view.bounds];
+//    self.flipViewController = [[FlipViewController alloc] initWithFrame:self.view.bounds];
+    self.flipViewController = [[FlipViewController alloc] initWithFrame:CGRectMake(0, 0, 320, 480)];
     self.flipViewController.delegate = self;
     [self.view addSubview:self.flipViewController];
 }

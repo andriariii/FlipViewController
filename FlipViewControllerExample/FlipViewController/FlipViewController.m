@@ -33,7 +33,7 @@
 - (id)initWithFrame:(CGRect)frame {
     if (self = [super initWithFrame:frame]) {
         self.flipViews = [[NSMutableArray alloc] init];
-        self.currentDirection = 0;
+        self.currentDirection = FlipDirectionForward;
         
         UIPanGestureRecognizer *panGestureRecognizer = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(didPan:)];
         panGestureRecognizer.delegate = self;
@@ -255,6 +255,7 @@
     NSInteger flipViewsCount = self.flipViews.count;
     
     FlipView *currentFrame = [self.flipViews objectAtIndex:flipViewsCount - 1];
+//    FlipView *currentFrame = [self.flipViews lastObject];
     FlipView *previousFrame = [self.flipViews objectAtIndex:0];
     
     CALayer *targetLayer;
