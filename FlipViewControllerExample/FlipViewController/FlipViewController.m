@@ -8,21 +8,23 @@
 
 #import "FlipViewController.h"
 
-#define kDepth 1000
+#define kDepth 2000
 #define kGravity 2
 #define kSensitivity 40
 
-@interface FlipViewController ()
-
-@property (nonatomic, unsafe_unretained) CGFloat currentAnimationProgress;
-@property (nonatomic, unsafe_unretained) NSInteger currentIndex;
-@property (nonatomic, strong) NSMutableArray *flipViews;
-@property (nonatomic, unsafe_unretained) FlipDirection currentDirection;
-@property (nonatomic, getter = isAnimating) BOOL animating;
+@implementation FlipView
 
 @end
 
-@implementation FlipView
+@interface FlipViewController ()
+
+@property (nonatomic, unsafe_unretained) BOOL animationEnded;
+@property (nonatomic, unsafe_unretained) CGFloat sublayerCornerRadius;
+@property (nonatomic, unsafe_unretained) BOOL animationLock;
+@property (nonatomic, unsafe_unretained) CGFloat currentAnimationProgress;
+@property (nonatomic, unsafe_unretained) FlipDirection currentDirection;
+@property (nonatomic, unsafe_unretained) CGImageRef transitionImageBackup;
+@property (nonatomic, strong) NSMutableArray *flipViews;
 
 @end
 
@@ -118,8 +120,6 @@
         
         [self.flipViews addObject:flipView];
         
-        self.currentIndex = self.flipViews.count - 1;
-        
         return YES;
     }
     
@@ -136,25 +136,21 @@
     return layer;
 }
 
-- (void)setAnimationProgressWithValue:(CGFloat)animationProgress {
-    NSInteger flipViewsCount = self.flipViews.count;
-    FlipView *currentFrame = [self.flipViews objectAtIndex:self.currentIndex];
-    FlipView *nextFrame = [self.flipViews objectAtIndex:abs((self.currentIndex - 1)) % flipViewsCount];
-    FlipView *previousFrame = [self.flipViews objectAtIndex:abs(((self.currentIndex + 1) - flipViewsCount)) % flipViewsCount];
-    
+- (void)setAnimationProgressWithValue:(CGFloat)aValue {
+    int frameCount = [self.flipViews count];
+    FlipView* currentFrame = [self.flipViews lastObject];
     CALayer *targetLayer;
+    FlipView* nextFrame = [self.flipViews objectAtIndex:frameCount-2];
+    FlipView* previousFrame = [self.flipViews objectAtIndex:0];
+    
     CGFloat rotationAfterDirection;
     
-    if (animationProgress - self.currentAnimationProgress >= 0.0f) {
+    if (aValue - self.currentAnimationProgress >= 0.0f) {
         self.currentDirection = FlipDirectionForward;
         targetLayer = [currentFrame.animationLayers lastObject];
-    } else if (animationProgress - self.currentAnimationProgress < 0.0f) {
+    } else if (aValue - self.currentAnimationProgress < 0.0f) {
         self.currentDirection = FlipDirectionBackward;
-        
-        // Reorder layers
-        [previousFrame removeFromSuperlayer];
-        [self.layer insertSublayer:previousFrame above:nextFrame];
-        
+        [self sortLayersForDirection:self.currentDirection step:1];
         targetLayer = [currentFrame.animationLayers objectAtIndex:0];
     }
     
@@ -163,65 +159,114 @@
     if (self.currentDirection == FlipDirectionForward) {
         rotationAfterDirection = - M_PI;
         targetLayer = [currentFrame.animationLayers lastObject];
-    } else {
+    } else if (self.currentDirection == FlipDirectionBackward) {
         rotationAfterDirection = M_PI;
         targetLayer = [currentFrame.animationLayers objectAtIndex:0];
     }
     
-    CGFloat adjustedAnimationProgress  = fabs(animationProgress * (kSensitivity / 1000.0));
-    // Make sure the adjusted value is between 0.0 and 10.0
+    CGFloat adjustedAnimationProgress;
+    adjustedAnimationProgress = fabs(aValue * (kSensitivity / 1000.0));
     adjustedAnimationProgress = MAX(0.0, adjustedAnimationProgress);
     adjustedAnimationProgress = MIN(10.0, adjustedAnimationProgress);
     
-    CALayer *targetFrontLayer;
-    CALayer *targetBackLayer;
+    CALayer *targetFrontLayer = [targetLayer.sublayers objectAtIndex:1];
+    CALayer *nextLayer;
     
-    switch (self.currentDirection) {
-        case FlipDirectionForward: {
-            targetFrontLayer = [targetLayer.sublayers objectAtIndex:1];
-            CALayer *nextLayer = [nextFrame.animationLayers objectAtIndex:0];
-            targetBackLayer = [nextLayer.sublayers objectAtIndex:0];
-        }
-            break;
-        case FlipDirectionBackward: {
-            targetFrontLayer = [targetLayer.sublayers objectAtIndex:1]; // upper front layer
-            CALayer *previousLayer = [previousFrame.animationLayers objectAtIndex:1];
-            targetBackLayer = [previousLayer.sublayers objectAtIndex:0];
-        }
-            break;
-        default:
-            break;
-    }
+    if (self.currentDirection == FlipDirectionForward)
+        nextLayer = [nextFrame.animationLayers objectAtIndex:0];
+    else
+        nextLayer = [previousFrame.animationLayers objectAtIndex:1];
     
-    [CATransaction begin];
-    
-    CATransform3D aTransform = CATransform3DIdentity;
-    aTransform.m34 = 1.0 / - kDepth;
-    [targetLayer setValue:[NSValue valueWithCATransform3D:CATransform3DRotate(aTransform, rotationAfterDirection/10.0 * self.currentAnimationProgress, 1, 0, 0)] forKeyPath:@"transform"];
-    
-    [self removeAnimationsFromLayer:targetLayer];
-    
-    [CATransaction commit];
+    CALayer *targetBackLayer = [nextLayer.sublayers objectAtIndex:0];
     
     if (adjustedAnimationProgress != self.currentAnimationProgress) {
         CATransform3D aTransform = CATransform3DIdentity;
         aTransform.m34 = 1.0 / - kDepth;
         targetLayer.sublayerTransform = aTransform;
         
-        CGImageRef tempImageRef = (__bridge CGImageRef)targetBackLayer.contents;
-        targetFrontLayer.contents = (__bridge id)tempImageRef;
+        if (self.transitionImageBackup == nil) {
+            CGImageRef tempImageRef = (__bridge CGImageRef)targetBackLayer.contents;
+            self.transitionImageBackup = (__bridge CGImageRef)targetFrontLayer.contents;
+            targetFrontLayer.contents = (__bridge id)tempImageRef;
+        }
+        
+        [self setTransformForLayer:targetLayer
+                        startValue:(rotationAfterDirection/10.0 * self.currentAnimationProgress)
+                          endValue:(rotationAfterDirection/10.0 * adjustedAnimationProgress)
+                          duration:0.6
+                       setDelegate:NO];
         
         self.currentAnimationProgress = adjustedAnimationProgress;
     }
 }
 
-- (void)endAnimationWithSpeed:(CGFloat)aVelocity {
+- (void)setTransformForLayer:(CALayer *)layer
+                  startValue:(CGFloat)startValue
+                    endValue:(CGFloat)endValue
+                    duration:(CGFloat)duration
+                 setDelegate:(BOOL)setDelegate {
+    CATransform3D aTransform = CATransform3DIdentity;
+    aTransform.m34 = 1.0 / - kDepth;
+    
+    CABasicAnimation *animation = [CABasicAnimation animationWithKeyPath:@"transform"];
+    animation.duration = duration;
+    animation.fromValue = [NSValue valueWithCATransform3D:CATransform3DRotate(aTransform, startValue, 1, 0, 0)];
+    animation.toValue = [NSValue valueWithCATransform3D:CATransform3DRotate(aTransform, endValue, 1, 0, 0)];
+    
+    if (setDelegate) animation.delegate = self;
+    
+    animation.removedOnCompletion = NO;
+    [animation setFillMode:kCAFillModeForwards];
+    
+    [layer addAnimation:animation forKey:@"transformAnimation"];
+}
+
+- (void)sortLayersForDirection:(FlipDirection)flipDirection step:(NSInteger)step {
+    if ([self.flipViews count] > 1) {
+        FlipView *currentFrame = [self.flipViews lastObject];
+        FlipView *previousFrame = [self.flipViews objectAtIndex:0];
+        FlipView *previousPreviousFrame = [self.flipViews objectAtIndex:1];
+        FlipView *nextFrame = [self.flipViews objectAtIndex:[self.flipViews count]-2];
+        
+        if (flipDirection == FlipDirectionForward) {
+            
+            if (step == 3) {
+                [currentFrame removeFromSuperlayer];
+                
+                [self.layer insertSublayer:currentFrame below:previousFrame];
+                
+                [self.flipViews removeLastObject];
+                
+                [self.flipViews insertObject:currentFrame atIndex:0];
+            }
+            
+        } else if (flipDirection == FlipDirectionBackward) {
+            if (step == 1) {
+                if ([self.flipViews count] > 2) {
+                    [previousFrame removeFromSuperlayer];
+                    [self.layer insertSublayer:previousFrame above:nextFrame];
+                }
+            } else if (step == 2) {
+                if ([self.flipViews count] > 2) {
+                    [previousFrame removeFromSuperlayer];
+                    [self.layer insertSublayer:previousFrame below:previousPreviousFrame];
+                }
+            } else if (step == 3) {
+                [previousFrame removeFromSuperlayer];
+                [self.layer insertSublayer:previousFrame above:currentFrame];
+                [self.flipViews removeObjectAtIndex:0];
+                [self.flipViews addObject:previousFrame];
+            }
+        }
+    }
+}
+
+- (void)endAnimationWithVelocity:(CGFloat)velocity {
     if (self.currentAnimationProgress == 0.0f || self.currentAnimationProgress == 10.0f) {
         [self resetTransformValues];
     } else {
-        FlipView* currentFrame = [self.flipViews lastObject];
+        FlipView *currentFrame = [self.flipViews lastObject];
         CALayer *targetLayer;
-        
         CGFloat rotationAfterDirection;
         
         if (self.currentDirection == FlipDirectionForward) {
@@ -232,31 +277,36 @@
             targetLayer = [currentFrame.animationLayers objectAtIndex:0];
         }
         
-        [self removeAnimationsFromLayer:targetLayer];
-        self.animating = YES;
-        
         CATransform3D aTransform = CATransform3DIdentity;
         aTransform.m34 = 1.0 / - kDepth;
+        [targetLayer setValue:[NSValue valueWithCATransform3D:CATransform3DRotate(aTransform,rotationAfterDirection/10.0 * self.currentAnimationProgress, 1, 0, 0)] forKeyPath:@"transform"];
+        for (CALayer *layer in targetLayer.sublayers) {
+            [layer removeAllAnimations];
+        }
+        [targetLayer removeAllAnimations];
         
-        CABasicAnimation *animation = [CABasicAnimation animationWithKeyPath:@"transform"];
-        animation.fromValue = [NSValue valueWithCATransform3D:CATransform3DRotate(aTransform, rotationAfterDirection / 10.0 * self.currentAnimationProgress, 1, 0, 0)];
-        animation.toValue = [NSValue valueWithCATransform3D:CATransform3DRotate(aTransform, rotationAfterDirection, 1, 0, 0)];
-        animation.removedOnCompletion = YES;
-        animation.delegate = self;
-        [animation setFillMode:kCAFillModeForwards];
-        
-        [targetLayer addAnimation:animation forKey:@"transformAnimation"];
-        
-        self.currentAnimationProgress = 10.0f;
+        if (self.currentAnimationProgress + velocity <= 5.0f) {
+            [self setTransformForLayer:targetLayer
+                            startValue:rotationAfterDirection / 10.0 * self.currentAnimationProgress
+                              endValue:0.0f
+                              duration:1.0f / (kGravity + velocity)
+                           setDelegate:YES];
+            
+            self.currentAnimationProgress = 0.0f;
+        } else {
+            [self setTransformForLayer:targetLayer
+                            startValue:rotationAfterDirection / 10.0 * self.currentAnimationProgress
+                              endValue:rotationAfterDirection
+                              duration:1.0f / (kGravity + velocity)
+                           setDelegate:YES];
+            
+            self.currentAnimationProgress = 10.0f;
+        }
     }
 }
 
 - (void)resetTransformValues {
-    NSInteger flipViewsCount = self.flipViews.count;
-    
-    FlipView *currentFrame = [self.flipViews objectAtIndex:flipViewsCount - 1];
-//    FlipView *currentFrame = [self.flipViews lastObject];
-    FlipView *previousFrame = [self.flipViews objectAtIndex:0];
+    FlipView *currentFrame = [self.flipViews lastObject];
     
     CALayer *targetLayer;
     
@@ -267,38 +317,33 @@
     }
     
     [CATransaction begin];
+    [CATransaction setDisableActions:YES];
     
     [targetLayer setValue:[NSValue valueWithCATransform3D:CATransform3DIdentity] forKeyPath:@"transform"];
     
-    [self removeAnimationsFromLayer:targetLayer];
+    for (CALayer *layer in targetLayer.sublayers) {
+        [layer removeAllAnimations];
+    }
+    [targetLayer removeAllAnimations];
     
     targetLayer.zPosition = 0;
-    targetLayer.sublayerTransform = CATransform3DIdentity;
+
     
-    if (self.currentDirection == FlipDirectionForward) {
-        [currentFrame removeFromSuperlayer];
-        [self.layer insertSublayer:currentFrame below:previousFrame];
-        [self.flipViews removeLastObject];
-        [self.flipViews insertObject:currentFrame atIndex:0];
-    } else if (self.currentDirection == FlipDirectionBackward) {
-        [previousFrame removeFromSuperlayer];
-        [self.layer insertSublayer:previousFrame above:currentFrame];
-        [self.flipViews removeObjectAtIndex:0];
-        [self.flipViews addObject:previousFrame];
+    CATransform3D aTransform = CATransform3DIdentity;
+    targetLayer.sublayerTransform = aTransform;
+    
+    if (self.currentAnimationProgress == 10.0f) {
+        [self sortLayersForDirection:self.currentDirection step:3];
+    } else {
+        [self sortLayersForDirection:self.currentDirection step:2];
     }
     
     [CATransaction commit];
     
-    self.animating = NO;
+    self.animationEnded = NO;
+    self.animationLock = NO;
+    self.transitionImageBackup = nil;
     self.currentAnimationProgress = 0.0f;
-}
-
-- (void)removeAnimationsFromLayer:(CALayer *)layer {
-    for (CALayer *sublayer in layer.sublayers) {
-        [sublayer removeAllAnimations];
-    }
-    
-    [layer removeAllAnimations];
 }
 
 #pragma mark - UIPanGestureRecognizer
@@ -306,21 +351,24 @@
 - (void)didPan:(UIPanGestureRecognizer *)recognizer {
     switch (recognizer.state) {
         case UIGestureRecognizerStateBegan: {
-            [NSObject cancelPreviousPerformRequestsWithTarget:self];
-            self.animating = YES;
+            if (self.animationEnded == NO) {
+                [NSObject cancelPreviousPerformRequestsWithTarget:self];
+                self.animationLock = YES;
+            }
         }
             break;
         case UIGestureRecognizerStateChanged: {
-            if (self.isAnimating) {
-                CGPoint translationValue = [recognizer translationInView:self];
-                [self setAnimationProgressWithValue:translationValue.y];
+            if (self.animationLock && self.animationEnded == NO) {
+                CGFloat value = [recognizer translationInView:self].y;
+                [self setAnimationProgressWithValue:value];
             }
         }
             break;
         case UIGestureRecognizerStateEnded: {
-            if (self.isAnimating) {
-                CGFloat speed = sqrtf(fabsf([recognizer velocityInView:self].x)) / 10.0f;
-                [self endAnimationWithSpeed:speed];
+            if (self.animationLock) {
+                self.animationEnded = YES;
+                CGFloat value = sqrtf(fabsf([recognizer velocityInView:self].x))/10.0f;
+                [self endAnimationWithVelocity:value];
             }
         }
             break;
@@ -331,10 +379,9 @@
 
 #pragma mark - CAAnimationDelegate
 
-- (void)animationDidStop:(CABasicAnimation *)theAnimation finished:(BOOL)finished {
-    if (finished && self.animating) {
+- (void)animationDidStop:(CABasicAnimation *)animation finished:(BOOL)finished {
+    if (finished)
         [self resetTransformValues];
-    }
 }
 
 @end
